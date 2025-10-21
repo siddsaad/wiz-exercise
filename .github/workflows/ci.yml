@@ -3,6 +3,7 @@ name: CI - Build • SBOM • Scan • Push
 on:
   push:
     branches: ["main"]
+    tags: ["v*.*.*"] # build on version tags too
   pull_request:
 
 jobs:
@@ -30,14 +31,12 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Compute image ref
+      - name: Compute image refs
         id: img
         run: |
           echo "registry=${{ steps.ecr.outputs.registry }}" >> $GITHUB_OUTPUT
           echo "image=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
-          # always make a short SHA tag
           echo "sha_tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-          # if it's a tag build, expose the tag name (e.g., v1.0.4)
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             echo "version_tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
           fi
@@ -47,12 +46,6 @@ jobs:
           docker build \
             -t ${{ steps.img.outputs.image }}:${{ steps.img.outputs.sha_tag }} \
             -t ${{ steps.img.outputs.image }}:latest .
-
-      - name: Tag version (only on tag builds)
-        if: ${{ steps.img.outputs.version_tag != '' }}
-        run: |
-          docker tag ${{ steps.img.outputs.image }}:${{ steps.img.outputs.sha_tag }} \
-                     ${{ steps.img.outputs.image }}:${{ steps.img.outputs.version_tag }}
 
       - name: SBOM (Syft)
         uses: anchore/sbom-action@v0
@@ -70,7 +63,13 @@ jobs:
           ignore-unfixed: true
           vuln-type: "os,library"
           scanners: "vuln,secret,misconfig"
-          # To fail PRs on findings, add: exit-code: '1'
+          # To fail PRs on findings later, add: exit-code: '1'
+
+      - name: Tag version (only on tag builds)
+        if: ${{ steps.img.outputs.version_tag != '' }}
+        run: |
+          docker tag ${{ steps.img.outputs.image }}:${{ steps.img.outputs.sha_tag }} \
+                     ${{ steps.img.outputs.image }}:${{ steps.img.outputs.version_tag }}
 
       - name: Push images
         run: |
@@ -80,7 +79,9 @@ jobs:
             docker push ${{ steps.img.outputs.image }}:${{ steps.img.outputs.version_tag }}
           fi
 
-      - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy.sarif
+      # (Optional) Publish the digest as job output for downstream jobs
+      - name: Output digest of latest build
+        id: digest
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.img.outputs.image }}:${{ steps.img.outputs.sha_tag }} | cut -d'@' -f2)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT

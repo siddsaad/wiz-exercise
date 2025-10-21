@@ -1,8 +1,8 @@
-name: CD - Set Image on EKS
+name: CD - Set Image on EKS (immutable digest)
 
 on:
   push:
-    tags: ["v*.*.*"] # deploy on version tags (e.g., v1.0.0)
+    tags: ["v*.*.*"] # deploy on version tags (e.g., v1.0.7)
   workflow_dispatch:
 
 jobs:
@@ -33,18 +33,46 @@ jobs:
       - name: Kubeconfig
         run: aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
 
-      - name: Compute image for this tag
-        id: img
+      - name: Wait for image tag to exist in ECR (max 5 min)
+        env:
+          REPO: ${{ env.ECR_REPOSITORY }}
+          TAG: ${{ github.ref_name }}
+          REGION: ${{ env.AWS_REGION }}
         run: |
-          ACC=$(aws sts get-caller-identity --query Account --output text)
-          echo "image=$ACC.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          echo "Waiting for $REPO:$TAG in $REGION ..."
+          for i in {1..60}; do
+            if aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$TAG" --region "$REGION" >/dev/null 2>&1; then
+              echo "Found $REPO:$TAG"
+              exit 0
+            fi
+            echo "Not found yet (attempt $i). Sleeping 5s..."
+            sleep 5
+          done
+          echo "ERROR: $REPO:$TAG not found in ECR after waiting."
+          exit 1
 
-      - name: Dry run (show diff)
+      - name: Resolve tag to immutable digest
+        id: img
+        env:
+          REPO: ${{ env.ECR_REPOSITORY }}
+          TAG: ${{ github.ref_name }}
+          REGION: ${{ env.AWS_REGION }}
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "$REPO" \
+            --image-ids imageTag="$TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text --region "$REGION")
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "image=$ACC.dkr.ecr.$REGION.amazonaws.com/$REPO@$DIGEST" >> $GITHUB_OUTPUT
+          echo "Resolved image: $ACC.dkr.ecr.$REGION.amazonaws.com/$REPO@$DIGEST"
+
+      - name: Show diff (server dry-run)
         run: |
           kubectl -n "$NAMESPACE" set image deploy/"$DEPLOYMENT" "$CONTAINER"=${{ steps.img.outputs.image }} \
-            --record --dry-run=server -o yaml
+            --dry-run=server -o yaml
 
-      - name: Update Deployment image
+      - name: Update Deployment image (immutable)
         run: |
-          kubectl -n "$NAMESPACE" set image deploy/"$DEPLOYMENT" "$CONTAINER"=${{ steps.img.outputs.image }} --record
+          kubectl -n "$NAMESPACE" set image deploy/"$DEPLOYMENT" "$CONTAINER"=${{ steps.img.outputs.image }}
           kubectl -n "$NAMESPACE" rollout status deploy/"$DEPLOYMENT" --timeout=180s
