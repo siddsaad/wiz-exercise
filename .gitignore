@@ -1,6 +1,28 @@
+# Go binaries and build output
+*.exe
+*.out
+*.log
+/bin/
+/build/
+/dist/
+
+# Dependency folders
 node_modules/
-dist/
-build/
-*.tar
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS junk
 .DS_Store
 Thumbs.db
+
+# Git & Docker
+.git
+.gitignore
+.dockerignore
+
+# Misc
+coverage/
+.env
