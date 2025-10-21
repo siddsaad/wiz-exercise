@@ -1,0 +1,10 @@
+# Builds / deps
+node_modules/
+dist/
+build/
+target/
+# Docker artifacts
+*.tar
+# OS
+.DS_Store
+Thumbs.db
