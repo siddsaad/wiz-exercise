@@ -1,36 +1,56 @@
 name: CI - Build • SBOM • Scan • Push
+
 on:
-  push: { branches: ["main"] }
+  push:
+    branches: ["main"]
   pull_request:
 
 jobs:
   build-scan-push:
-    permissions: { id-token: write, contents: read, security-events: write }
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write # OIDC to assume AWS role
+      contents: read
+      security-events: write # upload SARIF
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - id: ecr
+
+      - name: Login to ECR
+        id: ecr
         uses: aws-actions/amazon-ecr-login@v2
-      - id: img
+
+      - name: Compute image ref
+        id: img
         run: |
           echo "registry=${{ steps.ecr.outputs.registry }}" >> $GITHUB_OUTPUT
           echo "tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           echo "image=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
-      - run: |
-          docker build -t ${{ steps.img.outputs.image }}:${{ steps.img.outputs.tag }} \
-                       -t ${{ steps.img.outputs.image }}:latest .
-      - uses: anchore/sbom-action@v0
+
+      - name: Build image
+        run: |
+          docker build \
+            -t ${{ steps.img.outputs.image }}:${{ steps.img.outputs.tag }} \
+            -t ${{ steps.img.outputs.image }}:latest .
+
+      - name: SBOM (Syft)
+        uses: anchore/sbom-action@v0
         with:
           image: ${{ steps.img.outputs.image }}:latest
           output-file: sbom.spdx.json
-      - uses: aquasecurity/trivy-action@0.24.0
+
+      - name: Scan (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ${{ steps.img.outputs.image }}:latest
           format: sarif
@@ -39,8 +59,14 @@ jobs:
           ignore-unfixed: true
           vuln-type: "os,library"
           scanners: "vuln,secret,misconfig"
-      - uses: github/codeql-action/upload-sarif@v3
-        with: { sarif_file: trivy.sarif }
-      - run: |
+          # To fail PRs on findings, add: exit-code: '1'
+
+      - name: Push images
+        run: |
           docker push ${{ steps.img.outputs.image }}:${{ steps.img.outputs.tag }}
           docker push ${{ steps.img.outputs.image }}:latest
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
