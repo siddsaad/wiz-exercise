@@ -34,14 +34,25 @@ jobs:
         id: img
         run: |
           echo "registry=${{ steps.ecr.outputs.registry }}" >> $GITHUB_OUTPUT
-          echo "tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           echo "image=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
+          # always make a short SHA tag
+          echo "sha_tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          # if it's a tag build, expose the tag name (e.g., v1.0.4)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version_tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build image
         run: |
           docker build \
-            -t ${{ steps.img.outputs.image }}:${{ steps.img.outputs.tag }} \
+            -t ${{ steps.img.outputs.image }}:${{ steps.img.outputs.sha_tag }} \
             -t ${{ steps.img.outputs.image }}:latest .
+
+      - name: Tag version (only on tag builds)
+        if: ${{ steps.img.outputs.version_tag != '' }}
+        run: |
+          docker tag ${{ steps.img.outputs.image }}:${{ steps.img.outputs.sha_tag }} \
+                     ${{ steps.img.outputs.image }}:${{ steps.img.outputs.version_tag }}
 
       - name: SBOM (Syft)
         uses: anchore/sbom-action@v0
@@ -63,8 +74,11 @@ jobs:
 
       - name: Push images
         run: |
-          docker push ${{ steps.img.outputs.image }}:${{ steps.img.outputs.tag }}
+          docker push ${{ steps.img.outputs.image }}:${{ steps.img.outputs.sha_tag }}
           docker push ${{ steps.img.outputs.image }}:latest
+          if [ -n "${{ steps.img.outputs.version_tag }}" ]; then
+            docker push ${{ steps.img.outputs.image }}:${{ steps.img.outputs.version_tag }}
+          fi
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
