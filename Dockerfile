@@ -14,6 +14,7 @@ COPY --from=build  /go/src/tasky/tasky .
 COPY --from=build  /go/src/tasky/assets ./assets
 
 RUN echo "Name: Saad A Siddiqui" > /wizexercise.txt
+RUN echo "Name: Saad A Siddiqui2" > /wizexercise2.txt
 EXPOSE 8080
 ENTRYPOINT ["/app/tasky"]
 
