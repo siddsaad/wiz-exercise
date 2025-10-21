@@ -1,0 +1,46 @@
+name: CI - Build • SBOM • Scan • Push
+on:
+  push: { branches: ["main"] }
+  pull_request:
+
+jobs:
+  build-scan-push:
+    permissions: { id-token: write, contents: read, security-events: write }
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - id: img
+        run: |
+          echo "registry=${{ steps.ecr.outputs.registry }}" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          echo "image=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
+      - run: |
+          docker build -t ${{ steps.img.outputs.image }}:${{ steps.img.outputs.tag }} \
+                       -t ${{ steps.img.outputs.image }}:latest .
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.img.outputs.image }}:latest
+          output-file: sbom.spdx.json
+      - uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.img.outputs.image }}:latest
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          scanners: "vuln,secret,misconfig"
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: trivy.sarif }
+      - run: |
+          docker push ${{ steps.img.outputs.image }}:${{ steps.img.outputs.tag }}
+          docker push ${{ steps.img.outputs.image }}:latest

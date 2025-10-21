@@ -1,0 +1,37 @@
+name: CD - Set Image on EKS
+on:
+  push: { tags: ["v*.*.*"] }
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    permissions: { id-token: write, contents: read }
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      NAMESPACE: ${{ secrets.K8S_NAMESPACE }}
+      DEPLOYMENT: ${{ secrets.K8S_DEPLOYMENT }}
+      CONTAINER: ${{ secrets.K8S_CONTAINER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
+      - if: ${{ secrets.MONGO_URI != '' }}
+        run: |
+          kubectl -n $NAMESPACE delete secret mongo --ignore-not-found
+          kubectl -n $NAMESPACE create secret generic mongo --from-literal=uri='${{ secrets.MONGO_URI }}'
+      - id: img
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "image=$ACC.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+      - run: |
+          kubectl -n $NAMESPACE set image deploy/$DEPLOYMENT $CONTAINER=${{ steps.img.outputs.image }} --record --dry-run=server -o yaml
+      - run: |
+          kubectl -n $NAMESPACE set image deploy/$DEPLOYMENT $CONTAINER=${{ steps.img.outputs.image }} --record
+          kubectl -n $NAMESPACE rollout status deploy/$DEPLOYMENT --timeout=180s
